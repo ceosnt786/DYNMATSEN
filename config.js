@@ -4,8 +4,8 @@
   Never place a service_role key in GitHub.
 */
 window.SNT_SENIOR_CONFIG = Object.freeze({
-  supabaseUrl: "PASTE_SEPARATE_SUPABASE_URL_HERE",
-  supabasePublishableKey: "PASTE_SEPARATE_SUPABASE_PUBLISHABLE_KEY_HERE",
+  supabaseUrl: "https://zdzfrefxxpgbyynkazwm.supabase.co",
+  supabasePublishableKey: "sb_publishable_jEnlTbGtx5N95ePFcW5tUA_cQCE4vIi",
   groupId: "snt-dynamic-math-grades-7-12",
   appName: "SNT Dynamic Math — Grades 7 to 12"
 });
