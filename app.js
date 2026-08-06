@@ -20,6 +20,7 @@ let teacherAssignments = [];
 let teacherResults = [];
 let assignmentPreview = null;
 let repeatSourceId = null;
+let lastAssignmentStudentId = "";
 
 function el(id) { return document.getElementById(id); }
 function cleanText(value, max = 200) { return String(value ?? "").trim().replace(/\s+/g, " ").slice(0, max); }
@@ -34,6 +35,46 @@ function subtopicLabel(subtopic) { return ENGINE?.SUBTOPIC_LABELS?.[subtopic] ||
 function setMessage(id, text, type = "") { const node = el(id); if (!node) return; node.textContent = text || ""; node.className = `form-message${type ? ` ${type}` : ""}`; }
 function csvCell(value) { let text = String(value ?? ""); if (/^[=+\-@]/.test(text)) text = `'${text}`; return `"${text.replace(/"/g, '""')}"`; }
 function safeJson(value, fallback) { if (value && typeof value === "object") return value; try { return JSON.parse(value); } catch { return fallback; } }
+
+function getSelectedAssignmentStudent() {
+  const studentId = el("assignStudent")?.value || lastAssignmentStudentId;
+  return teacherStudents.find((student) => student.id === studentId && student.active) || null;
+}
+
+function restoreUnlockedAssignmentIdentity() {
+  const gradeSelect = el("assignGrade");
+  const subjectSelect = el("assignSubjectTrack");
+  if (!gradeSelect || !subjectSelect) return;
+  const currentGrade = gradeSelect.value;
+  const currentSubject = subjectSelect.value;
+  const grades = [7,8,9,10,11,12];
+  gradeSelect.innerHTML = grades.map((grade) => `<option value="${grade}">Grade ${grade}</option>`).join("");
+  gradeSelect.value = grades.includes(Number(currentGrade)) ? currentGrade : "7";
+  subjectSelect.innerHTML = '<option value="mathematics">Mathematics</option><option value="math_literacy">Mathematical Literacy</option>';
+  subjectSelect.value = currentSubject === "math_literacy" && Number(gradeSelect.value) >= 10 ? "math_literacy" : "mathematics";
+  gradeSelect.disabled = false;
+  subjectSelect.disabled = false;
+}
+
+function lockAssignmentIdentityToLearner(student = getSelectedAssignmentStudent()) {
+  const gradeSelect = el("assignGrade");
+  const subjectSelect = el("assignSubjectTrack");
+  if (!gradeSelect || !subjectSelect) return null;
+  if (!student) {
+    restoreUnlockedAssignmentIdentity();
+    return null;
+  }
+  lastAssignmentStudentId = student.id;
+  // Use a single-option select. This prevents any browser or dashboard refresh
+  // from silently falling back to Grade 7 while a Grade 8-12 learner is selected.
+  gradeSelect.innerHTML = `<option value="${student.grade}">Grade ${student.grade}</option>`;
+  gradeSelect.value = String(student.grade);
+  subjectSelect.innerHTML = `<option value="${student.subject_track}">${escapeHtml(subjectLabel(student.subject_track))}</option>`;
+  subjectSelect.value = student.subject_track;
+  gradeSelect.disabled = true;
+  subjectSelect.disabled = true;
+  return student;
+}
 
 function initialiseSupabase() {
   const configured = /^https:\/\//.test(CONFIG.supabaseUrl || "") && !String(CONFIG.supabaseUrl).includes("PASTE_") && String(CONFIG.supabasePublishableKey || "").length > 20 && !String(CONFIG.supabasePublishableKey).includes("PASTE_");
@@ -404,26 +445,34 @@ async function loadTeacherDashboardData() {
 }
 
 function populateTeacherSelectors() {
-  // Preserve selections before rebuilding dropdown options. Rebuilding a <select>
-  // automatically selects its first item, which previously reset allocations to Grade 7.
-  const currentStudentId = el("assignStudent").value;
+  // Preserve the selected learner independently of the dropdown. The dropdown is
+  // rebuilt after every save, so relying only on its current value can lose the
+  // learner and cause the Grade selector to fall back to its first option (Grade 7).
+  const currentStudentId = el("assignStudent").value || lastAssignmentStudentId;
   const currentEditGrade = el("editGrade").value;
   const currentScoreGrade = el("scoreGradeFilter").value;
   const currentLeaderboardGrade = el("leaderboardGrade").value;
   const currentScoreTopic = el("scoreTopicFilter").value;
   const currentLeaderboardTopic = el("leaderboardTopic").value;
 
-  el("assignStudent").innerHTML = '<option value="">Choose learner</option>' + teacherStudents.filter((s) => s.active).map((s) => `<option value="${s.id}">${escapeHtml(s.display_name)} — Grade ${s.grade} ${s.subject_track === "math_literacy" ? "Math Lit" : "Math"}</option>`).join("");
-  const selectedStudent = teacherStudents.find((s) => s.id === currentStudentId && s.active);
-  if (selectedStudent) el("assignStudent").value = selectedStudent.id;
+  el("assignStudent").innerHTML = '<option value="">Choose learner</option>' + teacherStudents.filter((student) => student.active).map((student) => `<option value="${student.id}">${escapeHtml(student.display_name)} — Grade ${student.grade} ${student.subject_track === "math_literacy" ? "Math Lit" : "Math"}</option>`).join("");
+  const selectedStudent = teacherStudents.find((student) => student.id === currentStudentId && student.active) || null;
+  if (selectedStudent) {
+    el("assignStudent").value = selectedStudent.id;
+    lastAssignmentStudentId = selectedStudent.id;
+  } else {
+    lastAssignmentStudentId = "";
+  }
 
   const grades = [7,8,9,10,11,12];
-  el("editGrade").innerHTML = grades.map((g) => `<option value="${g}">Grade ${g}</option>`).join("");
+  el("editGrade").innerHTML = grades.map((grade) => `<option value="${grade}">Grade ${grade}</option>`).join("");
   if (grades.includes(Number(currentEditGrade))) el("editGrade").value = currentEditGrade;
 
-  el("assignGrade").innerHTML = grades.map((g) => `<option value="${g}">Grade ${g}</option>`).join("");
-  el("scoreGradeFilter").innerHTML = '<option value="all">All grades</option>' + grades.map((g) => `<option value="${g}">Grade ${g}</option>`).join("");
-  el("leaderboardGrade").innerHTML = '<option value="all">All grades</option>' + grades.map((g) => `<option value="${g}">Grade ${g}</option>`).join("");
+  // Start unlocked, then replace the Grade and Subject selectors with the selected
+  // learner's single correct Grade/Subject option below.
+  restoreUnlockedAssignmentIdentity();
+  el("scoreGradeFilter").innerHTML = '<option value="all">All grades</option>' + grades.map((grade) => `<option value="${grade}">Grade ${grade}</option>`).join("");
+  el("leaderboardGrade").innerHTML = '<option value="all">All grades</option>' + grades.map((grade) => `<option value="${grade}">Grade ${grade}</option>`).join("");
   if (["all", ...grades.map(String)].includes(currentScoreGrade)) el("scoreGradeFilter").value = currentScoreGrade;
   if (["all", ...grades.map(String)].includes(currentLeaderboardGrade)) el("leaderboardGrade").value = currentLeaderboardGrade;
 
@@ -432,22 +481,11 @@ function populateTeacherSelectors() {
   const topicOptions = [...allTopics.entries()].sort((a,b) => a[1].localeCompare(b[1])).map(([id,label]) => `<option value="${id}">${escapeHtml(label)}</option>`).join("");
   el("scoreTopicFilter").innerHTML = '<option value="all">All topics</option>' + topicOptions;
   el("leaderboardTopic").innerHTML = '<option value="all">All topics</option>' + topicOptions;
-  if ([...el("scoreTopicFilter").options].some((o) => o.value === currentScoreTopic)) el("scoreTopicFilter").value = currentScoreTopic;
-  if ([...el("leaderboardTopic").options].some((o) => o.value === currentLeaderboardTopic)) el("leaderboardTopic").value = currentLeaderboardTopic;
+  if ([...el("scoreTopicFilter").options].some((option) => option.value === currentScoreTopic)) el("scoreTopicFilter").value = currentScoreTopic;
+  if ([...el("leaderboardTopic").options].some((option) => option.value === currentLeaderboardTopic)) el("leaderboardTopic").value = currentLeaderboardTopic;
 
-  if (selectedStudent) {
-    // Always restore the selected learner's actual grade and subject after a dashboard reload.
-    el("assignGrade").value = String(selectedStudent.grade);
-    el("assignSubjectTrack").value = selectedStudent.subject_track;
-    el("assignGrade").disabled = true;
-    el("assignSubjectTrack").disabled = true;
-    syncAssignmentCatalog();
-  } else {
-    el("assignGrade").disabled = false;
-    el("assignSubjectTrack").disabled = false;
-    if (!el("assignGrade").value) el("assignGrade").value = "7";
-    syncAssignmentCatalog();
-  }
+  if (selectedStudent) lockAssignmentIdentityToLearner(selectedStudent);
+  syncAssignmentCatalog();
 }
 
 function syncLearnerSubjectOptions() {
@@ -483,22 +521,31 @@ function renderLearners() {
 }
 
 function syncAssignmentLearner() {
-  const student = teacherStudents.find((s) => s.id === el("assignStudent").value);
-  if (!student) return renderTeacherAssignments();
-  el("assignGrade").value = String(student.grade);
-  el("assignSubjectTrack").value = student.subject_track;
-  el("assignGrade").disabled = true;
-  el("assignSubjectTrack").disabled = true;
+  const student = teacherStudents.find((item) => item.id === el("assignStudent").value && item.active) || null;
+  if (!student) {
+    lastAssignmentStudentId = "";
+    restoreUnlockedAssignmentIdentity();
+    syncAssignmentCatalog();
+    renderTeacherAssignments();
+    return;
+  }
+  lastAssignmentStudentId = student.id;
+  lockAssignmentIdentityToLearner(student);
   syncAssignmentCatalog();
   renderTeacherAssignments();
 }
 function syncAssignmentCatalog() {
-  const subject = el("assignSubjectTrack").value, grade = Number(el("assignGrade").value || 7);
-  if (subject === "math_literacy" && grade < 10) el("assignSubjectTrack").value = "mathematics";
-  const topics = ENGINE.getTopics(el("assignSubjectTrack").value, grade);
-  el("assignTopic").innerHTML = topics.map((t) => `<option value="${t.id}">${escapeHtml(t.label)}</option>`).join("");
+  const student = getSelectedAssignmentStudent();
+  if (student) lockAssignmentIdentityToLearner(student);
+  const subject = student ? student.subject_track : el("assignSubjectTrack").value;
+  const grade = student ? Number(student.grade) : Number(el("assignGrade").value || 7);
+  if (!student && subject === "math_literacy" && grade < 10) el("assignSubjectTrack").value = "mathematics";
+  const activeSubject = student ? student.subject_track : el("assignSubjectTrack").value;
+  const topics = ENGINE.getTopics(activeSubject, grade);
+  el("assignTopic").innerHTML = topics.map((topic) => `<option value="${topic.id}">${escapeHtml(topic.label)}</option>`).join("");
   syncAssignmentSubtopics();
 }
+
 function syncAssignmentSubtopics() {
   const subs = ENGINE.getSubtopics(el("assignSubjectTrack").value, Number(el("assignGrade").value), el("assignTopic").value);
   el("assignSubtopic").innerHTML = subs.map((s) => `<option value="${s.id}">${escapeHtml(s.label)}</option>`).join("");
@@ -515,10 +562,11 @@ function renderTopicSettings() {
 function collectTopicSettings() { const settings = {}; el("topicSettings").querySelectorAll("[data-setting]").forEach((node) => { settings[node.dataset.setting] = node.type === "checkbox" ? node.checked : (/^-?\d+(\.\d+)?$/.test(node.value) ? Number(node.value) : node.value); }); return settings; }
 
 function generateAssignmentPreview() {
-  const student = teacherStudents.find((s) => s.id === el("assignStudent").value);
+  const student = getSelectedAssignmentStudent();
   if (!student) return setMessage("assignmentMessage", "Choose a learner first.", "error");
+  lockAssignmentIdentityToLearner(student);
   try {
-    assignmentPreview = ENGINE.generateAssignment({ subjectTrack: el("assignSubjectTrack").value, grade: Number(el("assignGrade").value), topic: el("assignTopic").value, subtopic: el("assignSubtopic").value, quizType: el("assignQuizType").value, difficulty: el("assignDifficulty").value, questionCount: Number(el("assignQuestionCount").value), settings: collectTopicSettings(), seed: uuid() });
+    assignmentPreview = ENGINE.generateAssignment({ subjectTrack: student.subject_track, grade: Number(student.grade), topic: el("assignTopic").value, subtopic: el("assignSubtopic").value, quizType: el("assignQuizType").value, difficulty: el("assignDifficulty").value, questionCount: Number(el("assignQuestionCount").value), settings: collectTopicSettings(), seed: uuid() });
     el("previewTitle").textContent = cleanText(el("assignTitle").value, 120) || assignmentPreview.title;
     el("previewMeta").textContent = `${assignmentPreview.questionCount} questions • ${assignmentPreview.totalMarks} marks`;
     el("previewQuestions").innerHTML = assignmentPreview.questions.map((q) => `<article class="preview-question"><strong>${q.number}.</strong> ${q.contextHtml || ""}${q.promptHtml} <span class="soft-badge">${q.marks} mark${q.marks === 1 ? "" : "s"}</span></article>`).join("");
@@ -530,7 +578,17 @@ function generateAssignmentPreview() {
 
 async function saveAssignment() {
   if (!assignmentPreview) return;
-  const studentId = el("assignStudent").value, title = cleanText(el("assignTitle").value, 120) || assignmentPreview.title, editingId = el("editingAssignmentId").value || null;
+  const selectedStudent = getSelectedAssignmentStudent();
+  if (!selectedStudent) return setMessage("assignmentMessage", "Choose a learner first.", "error");
+  lockAssignmentIdentityToLearner(selectedStudent);
+  const studentId = selectedStudent.id, title = cleanText(el("assignTitle").value, 120) || assignmentPreview.title, editingId = el("editingAssignmentId").value || null;
+  if (Number(assignmentPreview.grade) !== Number(selectedStudent.grade) || assignmentPreview.subjectTrack !== selectedStudent.subject_track) {
+    assignmentPreview = null;
+    el("assignmentPreview").classList.add("hidden");
+    el("saveAssignmentBtn").disabled = true;
+    return setMessage("assignmentMessage", "The learner grade changed. Generate the preview again.", "error");
+  }
+  lastAssignmentStudentId = studentId;
   const common = { p_group_id: GROUP_ID, p_student_id: studentId, p_title: title, p_grade: assignmentPreview.grade, p_subject_track: assignmentPreview.subjectTrack, p_topic: assignmentPreview.topic, p_subtopic: assignmentPreview.subtopic, p_quiz_type: assignmentPreview.quizType, p_difficulty: assignmentPreview.difficulty, p_question_count: assignmentPreview.questionCount, p_time_limit_minutes: Number(el("assignTimeLimit").value || 0), p_settings: assignmentPreview.settings, p_seed: assignmentPreview.seed, p_generator_version: assignmentPreview.generatorVersion, p_question_payload: assignmentPreview.questions, p_answer_key: assignmentPreview.answerKey, p_total_marks: assignmentPreview.totalMarks };
   try {
     let result;
@@ -545,19 +603,29 @@ async function saveAssignment() {
 }
 
 function cancelAssignmentEdit(clearMessage = true) {
-  el("editingAssignmentId").value = ""; repeatSourceId = null; assignmentPreview = null; el("assignmentPreview").classList.add("hidden"); el("saveAssignmentBtn").disabled = true; el("saveAssignmentBtn").textContent = "Add to queue"; el("cancelEditBtn").classList.add("hidden"); el("assignStudent").disabled = false; el("assignGrade").disabled = false; el("assignSubjectTrack").disabled = false; if (el("assignStudent").value) syncAssignmentLearner(); if (clearMessage) setMessage("assignmentMessage", "");
+  el("editingAssignmentId").value = "";
+  repeatSourceId = null;
+  assignmentPreview = null;
+  el("assignmentPreview").classList.add("hidden");
+  el("saveAssignmentBtn").disabled = true;
+  el("saveAssignmentBtn").textContent = "Add to queue";
+  el("cancelEditBtn").classList.add("hidden");
+  el("assignStudent").disabled = false;
+  if (el("assignStudent").value) syncAssignmentLearner();
+  else restoreUnlockedAssignmentIdentity();
+  if (clearMessage) setMessage("assignmentMessage", "");
 }
 
 function startEditAssignment(id) {
   const a = teacherAssignments.find((item) => item.id === id && item.status === "waiting"); if (!a) return;
-  el("editingAssignmentId").value = a.id; repeatSourceId = null; el("assignStudent").value = a.student_id; el("assignStudent").disabled = true; el("assignGrade").value = String(a.grade); el("assignSubjectTrack").value = a.subject_track; el("assignGrade").disabled = true; el("assignSubjectTrack").disabled = true; syncAssignmentCatalog(); el("assignTopic").value = a.topic; syncAssignmentSubtopics(); el("assignSubtopic").value = a.subtopic; renderTopicSettings(); applySettingsToForm(a.settings); el("assignQuizType").value = a.quiz_type; el("assignDifficulty").value = a.difficulty; el("assignQuestionCount").value = String(a.question_count); el("assignTimeLimit").value = String(a.time_limit_minutes || 0); el("assignTitle").value = a.title; assignmentPreview = { generatorVersion: a.generator_version, seed: a.seed, subjectTrack: a.subject_track, grade: a.grade, topic: a.topic, subtopic: a.subtopic, quizType: a.quiz_type, difficulty: a.difficulty, settings: a.settings || {}, questionCount: a.question_count, totalMarks: a.total_marks, title: a.title, questions: safeJson(a.question_payload, []), answerKey: safeJson(a.answer_key, []) }; renderExistingPreview(); el("saveAssignmentBtn").disabled = false; el("saveAssignmentBtn").textContent = "Save changes"; el("cancelEditBtn").classList.remove("hidden"); el("teacherAssignTab").scrollIntoView({ behavior: "smooth" });
+  el("editingAssignmentId").value = a.id; repeatSourceId = null; lastAssignmentStudentId = a.student_id; el("assignStudent").value = a.student_id; el("assignStudent").disabled = true; el("assignGrade").value = String(a.grade); el("assignSubjectTrack").value = a.subject_track; el("assignGrade").disabled = true; el("assignSubjectTrack").disabled = true; syncAssignmentCatalog(); el("assignTopic").value = a.topic; syncAssignmentSubtopics(); el("assignSubtopic").value = a.subtopic; renderTopicSettings(); applySettingsToForm(a.settings); el("assignQuizType").value = a.quiz_type; el("assignDifficulty").value = a.difficulty; el("assignQuestionCount").value = String(a.question_count); el("assignTimeLimit").value = String(a.time_limit_minutes || 0); el("assignTitle").value = a.title; assignmentPreview = { generatorVersion: a.generator_version, seed: a.seed, subjectTrack: a.subject_track, grade: a.grade, topic: a.topic, subtopic: a.subtopic, quizType: a.quiz_type, difficulty: a.difficulty, settings: a.settings || {}, questionCount: a.question_count, totalMarks: a.total_marks, title: a.title, questions: safeJson(a.question_payload, []), answerKey: safeJson(a.answer_key, []) }; renderExistingPreview(); el("saveAssignmentBtn").disabled = false; el("saveAssignmentBtn").textContent = "Save changes"; el("cancelEditBtn").classList.remove("hidden"); el("teacherAssignTab").scrollIntoView({ behavior: "smooth" });
 }
 function applySettingsToForm(settings) { Object.entries(settings || {}).forEach(([key, value]) => { const node = el("topicSettings").querySelector(`[data-setting="${CSS.escape(key)}"]`); if (!node) return; if (node.type === "checkbox") node.checked = Boolean(value); else node.value = String(value); }); }
 function renderExistingPreview() { el("previewTitle").textContent = assignmentPreview.title; el("previewMeta").textContent = `${assignmentPreview.questionCount} questions • ${assignmentPreview.totalMarks} marks`; el("previewQuestions").innerHTML = assignmentPreview.questions.map((q) => `<article class="preview-question"><strong>${q.number}.</strong> ${q.contextHtml || ""}${q.promptHtml}</article>`).join(""); el("assignmentPreview").classList.remove("hidden"); }
 
 function prepareRepeatAssignment(id) {
   const a = teacherAssignments.find((item) => item.id === id); if (!a) return;
-  cancelAssignmentEdit(false); repeatSourceId = a.id; el("assignStudent").value = a.student_id; syncAssignmentLearner(); el("assignTopic").value = a.topic; syncAssignmentSubtopics(); el("assignSubtopic").value = a.subtopic; renderTopicSettings(); applySettingsToForm(a.settings); el("assignQuizType").value = a.quiz_type; el("assignDifficulty").value = a.difficulty; el("assignQuestionCount").value = String(a.question_count); el("assignTimeLimit").value = String(a.time_limit_minutes || 0); el("assignTitle").value = `Repeat: ${a.title}`.slice(0,120); generateAssignmentPreview(); el("cancelEditBtn").classList.remove("hidden"); el("teacherAssignTab").scrollIntoView({ behavior: "smooth" });
+  cancelAssignmentEdit(false); repeatSourceId = a.id; lastAssignmentStudentId = a.student_id; el("assignStudent").value = a.student_id; syncAssignmentLearner(); el("assignTopic").value = a.topic; syncAssignmentSubtopics(); el("assignSubtopic").value = a.subtopic; renderTopicSettings(); applySettingsToForm(a.settings); el("assignQuizType").value = a.quiz_type; el("assignDifficulty").value = a.difficulty; el("assignQuestionCount").value = String(a.question_count); el("assignTimeLimit").value = String(a.time_limit_minutes || 0); el("assignTitle").value = `Repeat: ${a.title}`.slice(0,120); generateAssignmentPreview(); el("cancelEditBtn").classList.remove("hidden"); el("teacherAssignTab").scrollIntoView({ behavior: "smooth" });
 }
 
 async function moveAssignment(id, direction) { const { error } = await db.rpc("senior_teacher_move_assignment", { p_assignment_id: id, p_direction: Number(direction) }); if (error) return alert(error.message); await loadTeacherDashboardData(); }
