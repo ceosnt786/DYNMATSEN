@@ -1,7 +1,7 @@
 (function (global) {
   "use strict";
 
-  const VERSION = "2.0.0";
+  const VERSION = "2.3.0";
 
   const SUBJECT_LABELS = {
     mathematics: "Mathematics",
@@ -261,19 +261,41 @@
     const marks = Number(options.marks || Math.max(1, fields.length));
     return { question: baseQuestion(promptHtml, "coefficient_map", marks, { ...options, fields }), key: { type: "coefficient_map", expected, marks, correctDisplay: options.correctDisplay || polynomialText(expected, fields.map((f) => f.key)), explanationHtml } };
   }
+  function qPolynomialExpression(promptHtml, expected, fields, explanationHtml, options = {}) {
+    const marks = Number(options.marks || Math.max(1, fields.length));
+    return {
+      question: baseQuestion(promptHtml, "polynomial_expression", marks, {
+        ...options,
+        fields,
+        answerLabel: options.answerLabel || "Type the full simplified expression",
+        inputMode: "text",
+        placeholder: options.placeholder || "e.g. x^3 + 14x^2 + 4x + 4"
+      }),
+      key: {
+        type: "coefficient_map",
+        expected,
+        marks,
+        correctDisplay: options.correctDisplay || polynomialText(expected, fields.map((f) => f.key)),
+        explanationHtml
+      }
+    };
+  }
   function qFactorPair(promptHtml, p, q, explanationHtml, options = {}) {
     const marks = Number(options.marks || 2);
     return { question: baseQuestion(promptHtml, "factor_pair", marks, { ...options, fields: [{ key: "p", label: "First constant" }, { key: "q", label: "Second constant" }] }), key: { type: "factor_pair", p: Number(p), q: Number(q), orderInsensitive: true, marks, correctDisplay: `(x ${p < 0 ? "−" : "+"} ${Math.abs(p)})(x ${q < 0 ? "−" : "+"} ${Math.abs(q)})`, explanationHtml } };
   }
 
   function generateArithmetic(rng, settings, operation = null) {
+    const chosen = operation || settings.operation || "mixed";
+    const op = chosen === "mixed" ? rng.pick(["+", "−", "×", "÷"]) : chosen;
     const first = seededDigits(rng, settings.firstDigits || 2, settings.allowNegative);
     let second = seededDigits(rng, settings.secondDigits || 2, settings.allowNegative);
-    const op = operation || rng.pick(["+", "−", "×", "÷"]);
     if (op === "+") return qNumber(`${first} + ${second} = ?`, first + second, "Add the two numbers.");
     if (op === "−") return qNumber(`${first} − ${second} = ?`, first - second, "Subtract the second number from the first.");
     if (op === "×") return qNumber(`${first} × ${second} = ?`, first * second, "Multiply the two numbers.");
-    second = Math.max(1, Math.abs(second)); const quotient = rng.int(2, 20); const dividend = second * quotient;
+    second = Math.max(1, Math.abs(second));
+    const quotient = rng.int(2, 20);
+    const dividend = second * quotient;
     return qNumber(`${dividend} ÷ ${second} = ?`, quotient, "Use the inverse relationship between multiplication and division.");
   }
 
@@ -305,7 +327,7 @@
       const values = Array.from({ length: 7 }, () => rng.int(-8, 8));
       const prompt = `${term(values[0], "x³")}${signTerm(values[1], "x²")}${signTerm(values[2], "x")}${signTerm(values[3])}${signTerm(values[4], "x³")}${signTerm(values[5], "x²")}${signTerm(values[6], "x")}`;
       const expected = { x3: values[0] + values[4], x2: values[1] + values[5], x: values[2] + values[6], const: values[3] };
-      return qCoefficientMap(`Simplify: <strong>${prompt}</strong>`, expected, fields, "Collect terms with the same variable and exponent.", { correctDisplay: polynomialText({ "x³": expected.x3, "x²": expected.x2, x: expected.x, const: expected.const }, ["x³", "x²", "x", "const"]) });
+      return qPolynomialExpression(`Simplify: <strong>${prompt}</strong>`, expected, fields, "Collect terms with the same variable and exponent.", { correctDisplay: polynomialText({ "x³": expected.x3, "x²": expected.x2, x: expected.x, const: expected.const }, ["x³", "x²", "x", "const"]), placeholder: "e.g. x^3 + 14x^2 + 4x + 4" });
     }
     const a = rng.int(-9, 9) || 2, b = rng.int(-9, 9) || 3, c = rng.int(-12, 12), d = rng.int(-12, 12);
     const expected = { x: a + b, const: c + d };
@@ -603,8 +625,17 @@
   }
 
   function generateMeasurement(rng, subtopic) {
-    if (subtopic === "surface_area_volume") { const l = rng.int(3, 15), w = rng.int(2, 12), h = rng.int(2, 10); return qNumber(`Calculate the volume of a rectangular prism measuring ${l} cm × ${w} cm × ${h} cm.`, l * w * h, "Volume = length × width × height.", { unit: "cm³", marks: 2 }); }
-    const l = rng.int(5, 30), w = rng.int(4, 20); return qNumber(`Calculate the area of a rectangle with length ${l} cm and width ${w} cm.`, l * w, "Area = length × width.", { unit: "cm²" });
+    if (subtopic === "surface_area_volume") {
+      const l = rng.int(3, 15), w = rng.int(2, 12), h = rng.int(2, 10);
+      return qNumber(`Calculate the volume of a rectangular prism measuring ${l} cm × ${w} cm × ${h} cm.`, l * w * h, "Volume = length × width × height.", { unit: "cm³", marks: 2 });
+    }
+    if (subtopic === "perimeter_area") {
+      const l = rng.int(5, 30), w = rng.int(4, 20);
+      if (rng.bool()) return qNumber(`Calculate the perimeter of a rectangle with length ${l} cm and width ${w} cm.`, 2 * (l + w), "Perimeter = 2(length + width).", { unit: "cm", marks: 2 });
+      return qNumber(`Calculate the area of a rectangle with length ${l} cm and width ${w} cm.`, l * w, "Area = length × width.", { unit: "cm²", marks: 2 });
+    }
+    const cm = rng.int(150, 950), m = round(cm / 100, 2);
+    return qNumber(`Convert ${cm} cm to metres.`, m, "Divide by 100 to convert centimetres to metres.", { unit: "m", tolerance: 0.01, marks: 2 });
   }
 
   function generateStats(rng, subtopic) {
@@ -643,23 +674,55 @@
     const x = rng.int(-4, 5); return qNumber(`If f(x) = ${term(a, "x²")}${signTerm(b, "x")}${signTerm(c)}, calculate f′(${x}).`, 2 * a * x + b, "Differentiate, then substitute the x-value.", { marks: 3 });
   }
 
-  function generateMathLit(rng, topic, subtopic) {
+  function generateMathLit(rng, topic, subtopic, settings = {}) {
     if (topic === "finance") {
       if (subtopic === "budgets") { const income = rng.pick([8500, 12000, 15000]), rent = rng.pick([2500, 3500, 4500]), food = rng.pick([1800, 2400, 3200]), transport = rng.pick([900, 1200, 1600]); return qNumber(`A household earns ${money(income)} per month and spends ${money(rent)} on rent, ${money(food)} on food and ${money(transport)} on transport. Calculate the amount remaining.`, income - rent - food - transport, "Remaining = income − total expenses.", { correctDisplay: money(income - rent - food - transport), marks: 3 }); }
       if (subtopic === "tariffs") { const fixed = rng.pick([80, 100, 120]), rate = rng.pick([1.85, 2.2, 2.75]), units = rng.pick([120, 150, 180]); return qNumber(`A bill has a fixed charge of ${money(fixed)} plus ${money(rate)} per unit. Calculate the bill for ${units} units before VAT.`, fixed + rate * units, "Add the fixed charge and usage charge.", { tolerance: 0.01, correctDisplay: money(fixed + rate * units), marks: 3 }); }
       return generateFinance(rng, subtopic, "math_literacy");
     }
-    if (topic === "maps_plans") { const scale = rng.pick([25000,50000,75000,100000,125000,250000,500000]), cm = rng.int(15, 140) / 10; const km = cm * scale / 100000; return qNumber(`A map has scale 1:${scale.toLocaleString("en-ZA")}. A route measures ${cm} cm. Calculate the actual distance in kilometres.`, km, "Use the scale and convert centimetres to kilometres.", { tolerance: 0.01, unit: "km", marks: 3 }); }
-    if (topic === "measurement") return generateMeasurement(rng, subtopic);
+    if (topic === "maps_plans") {
+      if (subtopic === "travel") {
+        const speed = rng.pick([60, 80, 90, 100, 110]), hours = rng.pick([1.5, 2, 2.5, 3, 3.5, 4]);
+        return qNumber(`A car travels at ${speed} km/h for ${hours} hours. Calculate the distance travelled.`, speed * hours, "Distance = speed × time.", { unit: "km", tolerance: 0.01, marks: 3 });
+      }
+      if (subtopic === "floor_plans") {
+        const scale = rng.pick([50, 100, 200]), cm = rng.int(25, 90) / 10, actualM = cm * scale / 100;
+        return qNumber(`On a floor plan with scale 1:${scale}, a wall measures ${cm} cm. Calculate the actual wall length in metres.`, actualM, "Use the scale, then convert centimetres to metres.", { tolerance: 0.01, unit: "m", marks: 3 });
+      }
+      if (subtopic === "models") {
+        const scale = rng.pick([20, 25, 50, 100]), modelCm = rng.int(8, 40), actualCm = modelCm * scale;
+        return qNumber(`A model is built at a scale of 1:${scale}. If the model length is ${modelCm} cm, calculate the actual length in metres.`, actualCm / 100, "Multiply by the scale, then convert centimetres to metres.", { tolerance: 0.01, unit: "m", marks: 3 });
+      }
+      const scale = rng.pick([25000,50000,75000,100000,125000,250000,500000]), cm = rng.int(15, 140) / 10, km = cm * scale / 100000;
+      return qNumber(`A map has scale 1:${scale.toLocaleString("en-ZA")}. A route measures ${cm} cm. Calculate the actual distance in kilometres.`, km, "Use the scale and convert centimetres to kilometres.", { tolerance: 0.01, unit: "km", marks: 3 });
+    }
+    if (topic === "measurement") {
+      if (subtopic === "conversions") {
+        const litres = rng.pick([1.5, 2, 2.5, 3.75, 4]), ml = litres * 1000;
+        if (rng.bool()) return qNumber(`Convert ${litres} litres to millilitres.`, ml, "Multiply litres by 1000.", { unit: "mL", tolerance: 0.01, marks: 2 });
+        const mm = rng.pick([120, 250, 480, 750, 920]);
+        return qNumber(`Convert ${mm} mm to metres.`, mm / 1000, "Divide millimetres by 1000.", { unit: "m", tolerance: 0.001, marks: 2 });
+      }
+      if (subtopic === "perimeter_area") {
+        const l = rng.int(6, 18), w = rng.int(4, 15);
+        if (rng.bool()) return qNumber(`A rectangular garden is ${l} m long and ${w} m wide. Calculate its perimeter.`, 2 * (l + w), "Perimeter = 2(length + width).", { unit: "m", marks: 2 });
+        return qNumber(`A rectangular floor is ${l} m long and ${w} m wide. Calculate its area.`, l * w, "Area = length × width.", { unit: "m²", marks: 2 });
+      }
+      if (subtopic === "length_area_volume") {
+        const l = rng.int(2, 10), w = rng.int(2, 8), h = rng.int(2, 6);
+        return qNumber(`Calculate the volume of a box measuring ${l} m × ${w} m × ${h} m.`, l * w * h, "Volume = length × width × height.", { unit: "m³", marks: 3 });
+      }
+      return generateMeasurement(rng, subtopic);
+    }
     if (topic === "data_handling") return generateStats(rng, subtopic);
     if (topic === "probability") return generateProbability(rng, subtopic);
     if (subtopic === "percentages") { const value = rng.int(20, 250) * 10, pct = rng.pick([5,7.5,10,12.5,15,18,20,22.5,25,30,35,40]); return qNumber(`Calculate ${pct}% of ${value}.`, value * pct / 100, "Convert the percentage to a decimal and multiply.", { tolerance: 0.001 }); }
-    return generateArithmetic(rng, { firstDigits: 3, secondDigits: 2, allowNegative: false }, rng.pick(["+", "−", "×", "÷"]));
+    return generateArithmetic(rng, { firstDigits: Number(settings.firstDigits || 3), secondDigits: Number(settings.secondDigits || 2), allowNegative: false, operation: settings.operation || "mixed" }, settings.operation || null);
   }
 
   function generatorFor(subjectTrack, grade, topic, subtopic, rng, settings) {
-    if (subjectTrack === "math_literacy") return generateMathLit(rng, topic, subtopic);
-    if (["whole_numbers", "integers"].includes(topic)) return generateArithmetic(rng, settings);
+    if (subjectTrack === "math_literacy") return generateMathLit(rng, topic, subtopic, settings);
+    if (["whole_numbers", "integers"].includes(topic)) return generateArithmetic(rng, settings, settings.operation || null);
     if (topic === "decimals") return generateDecimal(rng, settings);
     if (topic === "fractions") { const d1 = rng.int(2, 12), d2 = rng.int(2, 12), n1 = rng.int(1, d1 - 1), n2 = rng.int(1, d2 - 1); return qFraction(`Calculate: ${fractionHtml(n1, d1)} + ${fractionHtml(n2, d2)}`, n1 * d2 + n2 * d1, d1 * d2, "Use a common denominator, add, then simplify.", { marks: 2 }); }
     if (topic === "algebraic_expressions") {
@@ -719,6 +782,7 @@
   function isAllowed(subjectTrack, grade, topic, subtopic) { return Boolean(TOPICS[subjectTrack]?.[Number(grade)]?.[topic]?.includes(subtopic)); }
   function getSettingSchema(topic, subtopic) {
     if (["whole_numbers", "integers", "numbers_calculations"].includes(topic)) return [
+      { key: "operation", label: "Operation", type: "select", options: ["mixed", "+", "−", "×", "÷"], optionLabels: { mixed: "Mixed", "+": "Addition (+)", "−": "Subtraction (−)", "×": "Multiplication (×)", "÷": "Division (÷)" }, default: "mixed" },
       { key: "firstDigits", label: "Digits in first number", type: "select", options: [1,2,3,4,5,6], default: 3 },
       { key: "secondDigits", label: "Digits in second number", type: "select", options: [1,2,3,4,5,6], default: 2 },
       { key: "allowNegative", label: "Allow negative values", type: "checkbox", default: topic === "integers" }

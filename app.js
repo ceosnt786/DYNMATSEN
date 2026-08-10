@@ -36,6 +36,67 @@ function setMessage(id, text, type = "") { const node = el(id); if (!node) retur
 function csvCell(value) { let text = String(value ?? ""); if (/^[=+\-@]/.test(text)) text = `'${text}`; return `"${text.replace(/"/g, '""')}"`; }
 function safeJson(value, fallback) { if (value && typeof value === "object") return value; try { return JSON.parse(value); } catch { return fallback; } }
 
+function invalidateAssignmentPreview(message = "Settings changed. Generate the preview again.") {
+  assignmentPreview = null;
+  if (el("assignmentPreview")) el("assignmentPreview").classList.add("hidden");
+  if (el("saveAssignmentBtn")) el("saveAssignmentBtn").disabled = true;
+  if (el("saveAssignmentBtn") && !el("editingAssignmentId")?.value) el("saveAssignmentBtn").textContent = "Add to queue";
+  if (message) setMessage("assignmentMessage", message, "");
+}
+function normalizePolynomialInput(value) {
+  return String(value || "")
+    .replace(/\s+/g, "")
+    .replace(/[–—−]/g, "-")
+    .replace(/³/g, '^3')
+    .replace(/²/g, '^2')
+    .replace(/⁰/g, '^0')
+    .replace(/¹/g, '^1');
+}
+function parseSimpleNumberToken(token) {
+  if (!token) return 1;
+  if (token === '+') return 1;
+  if (token === '-') return -1;
+  if (/^[+-]?\d+(\.\d+)?$/.test(token)) return Number(token);
+  return NaN;
+}
+function parsePolynomialResponse(raw, keys = ["x3", "x2", "x", "const"]) {
+  const text = normalizePolynomialInput(raw);
+  const result = { value: String(raw || "").trim() };
+  keys.forEach((key) => { result[key] = ""; });
+  if (!text) return result;
+  const sums = { x3: 0, x2: 0, x: 0, const: 0 };
+  const parts = text.match(/[+-]?[^+-]+/g) || [];
+  let valid = parts.length > 0;
+  for (const part of parts) {
+    if (!part) continue;
+    if (part.includes('x')) {
+      const idx = part.indexOf('x');
+      const coeffToken = part.slice(0, idx);
+      const coeff = parseSimpleNumberToken(coeffToken);
+      if (Number.isNaN(coeff)) { valid = false; break; }
+      let exponent = 1;
+      const after = part.slice(idx + 1);
+      if (after) {
+        if (!after.startsWith('^')) { valid = false; break; }
+        exponent = Number(after.slice(1));
+        if (!Number.isInteger(exponent)) { valid = false; break; }
+      }
+      if (exponent === 3) sums.x3 += coeff;
+      else if (exponent === 2) sums.x2 += coeff;
+      else if (exponent === 1) sums.x += coeff;
+      else if (exponent === 0) sums.const += coeff;
+      else { valid = false; break; }
+    } else {
+      const constant = parseSimpleNumberToken(part);
+      if (Number.isNaN(constant)) { valid = false; break; }
+      sums.const += constant;
+    }
+  }
+  if (!valid) return result;
+  keys.forEach((key) => { result[key] = String(sums[key] ?? ""); });
+  return result;
+}
+
 function getSelectedAssignmentStudent() {
   const studentId = el("assignStudent")?.value || lastAssignmentStudentId;
   return teacherStudents.find((student) => student.id === studentId && student.active) || null;
@@ -244,6 +305,7 @@ function renderQuestionInput(question) {
   if (question.responseType === "choice") return `<select data-qid="${id}" data-part="value"><option value="">Choose an answer</option>${(question.choices || []).map((choice) => `<option value="${escapeHtml(choice)}">${escapeHtml(choice)}</option>`).join("")}</select>`;
   if (question.responseType === "pair") return (question.fields || []).map((field) => `<label class="field-stack">${escapeHtml(field.label)}<input data-qid="${id}" data-part="${escapeHtml(field.key)}" inputmode="decimal"></label>`).join("");
   if (question.responseType === "coefficient_map") return `<div class="coefficient-grid">${(question.fields || []).map((field) => `<label class="field-stack">${escapeHtml(field.label)}<input data-qid="${id}" data-part="${escapeHtml(field.key)}" inputmode="numeric" placeholder="0"></label>`).join("")}</div>`;
+  if (question.responseType === "polynomial_expression") return `<div class="field-stack" style="width:100%"><label>${escapeHtml(question.answerLabel || "Type the full simplified expression")}<input data-qid="${id}" data-part="value" inputmode="text" autocapitalize="off" spellcheck="false" placeholder="${escapeHtml(question.placeholder || 'e.g. x^3 + 14x^2 + 4x + 4')}"></label><div class="phone-symbol-row" style="margin-top:8px"><button type="button" onclick="insertSymbol('x')">x</button><button type="button" onclick="insertSymbol('^')">^ Exponent</button><button type="button" onclick="insertSymbol('²')">²</button><button type="button" onclick="insertSymbol('³')">³</button><button type="button" onclick="insertSymbol('−')">−</button></div></div>`;
   if (question.responseType === "factor_pair") return `<div class="factor-template">(x + <input data-qid="${id}" data-part="p" inputmode="numeric" aria-label="First constant">)(x + <input data-qid="${id}" data-part="q" inputmode="numeric" aria-label="Second constant">)</div>`;
   return `<label class="field-stack">${escapeHtml(question.answerLabel || "Answer")}<input data-qid="${id}" data-part="value" inputmode="${question.inputMode || "decimal"}"></label>${question.unit ? `<span class="soft-badge">${escapeHtml(question.unit)}</span>` : ""}`;
 }
@@ -252,6 +314,10 @@ function collectResponses() {
   const questions = safeJson(activeAssignment.question_payload, []);
   return questions.map((question) => {
     const inputs = [...el("quizForm").querySelectorAll(`[data-qid="${CSS.escape(question.id)}"]`)];
+    if (question.responseType === "polynomial_expression") {
+      const raw = (inputs[0]?.value || "").trim();
+      return { id: question.id, response: parsePolynomialResponse(raw, (question.fields || []).map((field) => field.key)) };
+    }
     const response = {};
     inputs.forEach((input) => { response[input.dataset.part || "value"] = input.value.trim(); });
     return { id: question.id, response };
@@ -533,6 +599,7 @@ function syncAssignmentLearner() {
   lockAssignmentIdentityToLearner(student);
   syncAssignmentCatalog();
   renderTeacherAssignments();
+  invalidateAssignmentPreview();
 }
 function syncAssignmentCatalog() {
   const student = getSelectedAssignmentStudent();
@@ -544,12 +611,14 @@ function syncAssignmentCatalog() {
   const topics = ENGINE.getTopics(activeSubject, grade);
   el("assignTopic").innerHTML = topics.map((topic) => `<option value="${topic.id}">${escapeHtml(topic.label)}</option>`).join("");
   syncAssignmentSubtopics();
+  invalidateAssignmentPreview();
 }
 
 function syncAssignmentSubtopics() {
   const subs = ENGINE.getSubtopics(el("assignSubjectTrack").value, Number(el("assignGrade").value), el("assignTopic").value);
   el("assignSubtopic").innerHTML = subs.map((s) => `<option value="${s.id}">${escapeHtml(s.label)}</option>`).join("");
   renderTopicSettings();
+  invalidateAssignmentPreview();
 }
 function renderTopicSettings() {
   const schema = ENGINE.getSettingSchema(el("assignTopic").value, el("assignSubtopic").value);
@@ -558,6 +627,10 @@ function renderTopicSettings() {
     const options = field.options.map((value) => `<option value="${value}" ${String(value) === String(field.default) ? "selected" : ""}>${escapeHtml(field.optionLabels?.[value] || value)}</option>`).join("");
     return `<label>${escapeHtml(field.label)}<select data-setting="${field.key}">${options}</select></label>`;
   }).join("");
+  el("topicSettings").querySelectorAll("[data-setting]").forEach((node) => {
+    node.addEventListener("change", () => invalidateAssignmentPreview());
+    node.addEventListener("input", () => invalidateAssignmentPreview());
+  });
 }
 function collectTopicSettings() { const settings = {}; el("topicSettings").querySelectorAll("[data-setting]").forEach((node) => { settings[node.dataset.setting] = node.type === "checkbox" ? node.checked : (/^-?\d+(\.\d+)?$/.test(node.value) ? Number(node.value) : node.value); }); return settings; }
 
@@ -674,7 +747,7 @@ async function printCompletedAttempt(resultId) {
     openPrintDocument(`${data.title} — Completed Attempt`, html);
   } catch (error) { alert(error.message || "Could not prepare the completed-attempt PDF."); }
 }
-function formatResponse(response) { if (!response || typeof response !== "object") return String(response || "—"); return Object.values(response).filter((v) => v !== "").join("; ") || "Blank"; }
+function formatResponse(response) { if (!response || typeof response !== "object") return String(response || "—"); if (typeof response.value === "string" && response.value.trim()) return response.value.trim(); return Object.entries(response).filter(([key, value]) => key !== "value" && value !== "").map(([key, value]) => `${key}: ${value}`).join("; ") || "Blank"; }
 function openPrintDocument(title, content) { const w = window.open("", "_blank"); if (!w) return alert("Allow pop-ups to export the PDF."); w.document.write(`<!doctype html><html><head><meta charset="utf-8"><title>${escapeHtml(title)}</title><style>body{font-family:Arial,sans-serif;color:#111;max-width:850px;margin:25px auto;line-height:1.5}h1{border-bottom:3px solid #4f46e5;padding-bottom:8px}section{page-break-inside:avoid;margin:22px 0;padding-bottom:12px;border-bottom:1px solid #ddd}.fraction{display:inline-grid;grid-template-rows:auto auto;text-align:center;line-height:1}.fraction>span:first-child{border-bottom:1px solid #000}.answer-space{height:55px;border-bottom:1px dotted #aaa}@media print{button{display:none}}</style></head><body>${content}<p><button onclick="window.print()">Print / Save as PDF</button></p></body></html>`); w.document.close(); }
 
 
@@ -691,6 +764,12 @@ async function init() {
   if (!ENGINE) { el("setupWarning").classList.remove("hidden"); el("setupWarning").textContent = "Question engine could not load."; return; }
   populateStaticFilters();
   syncLearnerSubjectOptions();
+  ["assignQuizType","assignDifficulty","assignQuestionCount","assignTimeLimit","assignTitle","assignGrade","assignSubjectTrack","assignTopic","assignSubtopic","assignStudent"].forEach((id) => {
+    const node = el(id);
+    if (!node) return;
+    node.addEventListener("change", () => invalidateAssignmentPreview());
+    node.addEventListener("input", () => invalidateAssignmentPreview());
+  });
   if (!initialiseSupabase()) return;
   await loadPublicStudents();
   await checkTeacherSession();
