@@ -44,57 +44,120 @@ function invalidateAssignmentPreview(message = "Settings changed. Generate the p
   if (message) setMessage("assignmentMessage", message, "");
 }
 function normalizePolynomialInput(value) {
-  return String(value || "")
+  let text = String(value || "")
     .replace(/\s+/g, "")
     .replace(/[–—−]/g, "-")
+    .replace(/[×·*]/g, "")
     .replace(/³/g, '^3')
     .replace(/²/g, '^2')
-    .replace(/⁰/g, '^0')
-    .replace(/¹/g, '^1');
+    .replace(/¹/g, '^1')
+    .toLowerCase();
+  if (text.includes('=')) text = text.slice(text.lastIndexOf('=') + 1);
+  return text;
 }
 function parseSimpleNumberToken(token) {
-  if (!token) return 1;
-  if (token === '+') return 1;
+  if (!token || token === '+') return 1;
   if (token === '-') return -1;
-  if (/^[+-]?\d+(\.\d+)?$/.test(token)) return Number(token);
+  if (/^[+-]?\d+(?:\.\d+)?$/.test(token)) return Number(token);
   return NaN;
+}
+function fieldKeyForMonomial(variable, exponent, keys) {
+  if (!variable) return keys.includes('const') ? 'const' : null;
+  if (exponent === 1 && keys.includes(variable)) return variable;
+  const candidates = [`${variable}${exponent}`, `${variable}^${exponent}`];
+  return candidates.find((key) => keys.includes(key)) || null;
 }
 function parsePolynomialResponse(raw, keys = ["x3", "x2", "x", "const"]) {
   const text = normalizePolynomialInput(raw);
   const result = { value: String(raw || "").trim() };
   keys.forEach((key) => { result[key] = ""; });
   if (!text) return result;
-  const sums = { x3: 0, x2: 0, x: 0, const: 0 };
+  const sums = Object.fromEntries(keys.map((key) => [key, 0]));
   const parts = text.match(/[+-]?[^+-]+/g) || [];
   let valid = parts.length > 0;
   for (const part of parts) {
     if (!part) continue;
-    if (part.includes('x')) {
-      const idx = part.indexOf('x');
-      const coeffToken = part.slice(0, idx);
-      const coeff = parseSimpleNumberToken(coeffToken);
-      if (Number.isNaN(coeff)) { valid = false; break; }
-      let exponent = 1;
-      const after = part.slice(idx + 1);
-      if (after) {
-        if (!after.startsWith('^')) { valid = false; break; }
-        exponent = Number(after.slice(1));
-        if (!Number.isInteger(exponent)) { valid = false; break; }
-      }
-      if (exponent === 3) sums.x3 += coeff;
-      else if (exponent === 2) sums.x2 += coeff;
-      else if (exponent === 1) sums.x += coeff;
-      else if (exponent === 0) sums.const += coeff;
-      else { valid = false; break; }
-    } else {
-      const constant = parseSimpleNumberToken(part);
-      if (Number.isNaN(constant)) { valid = false; break; }
-      sums.const += constant;
+    const variableMatch = part.match(/^([+-]?\d*(?:\.\d+)?)([a-z])(?:\^(\d+))?$/);
+    if (variableMatch) {
+      const coeff = parseSimpleNumberToken(variableMatch[1]);
+      const variable = variableMatch[2];
+      const exponent = Number(variableMatch[3] || 1);
+      const key = fieldKeyForMonomial(variable, exponent, keys);
+      if (Number.isNaN(coeff) || !key) { valid = false; break; }
+      sums[key] += coeff;
+      continue;
     }
+    if (/^[+-]?\d+(?:\.\d+)?$/.test(part)) {
+      if (!keys.includes('const')) { valid = false; break; }
+      sums.const += Number(part);
+      continue;
+    }
+    valid = false; break;
   }
   if (!valid) return result;
-  keys.forEach((key) => { result[key] = String(sums[key] ?? ""); });
+  keys.forEach((key) => { result[key] = String(sums[key] ?? 0); });
   return result;
+}
+function parseMonomialResponse(raw) {
+  const text = normalizePolynomialInput(raw);
+  const out = { value: String(raw || '').trim(), a: '', b: '' };
+  const match = text.match(/^([+-]?\d*(?:\.\d+)?)x(?:\^(\d+))?$/);
+  if (!match) return out;
+  const coeff = parseSimpleNumberToken(match[1]);
+  const exponent = Number(match[2] || 1);
+  if (Number.isNaN(coeff) || !Number.isInteger(exponent)) return out;
+  out.a = String(coeff); out.b = String(exponent);
+  return out;
+}
+function parseLinearFactor(text) {
+  const parsed = parsePolynomialResponse(text, ['x','const']);
+  if (parsed.x === '' || parsed.const === '') return null;
+  return { a: Number(parsed.x), b: Number(parsed.const) };
+}
+function parseFactorExpression(raw, kind, fields = []) {
+  const original = String(raw || '').trim();
+  const text = normalizePolynomialInput(original);
+  const empty = { value: original };
+  fields.forEach((field) => { empty[field.key] = ''; });
+  if (!text) return empty;
+  const factors = [...text.matchAll(/\(([^()]*)\)/g)].map((m) => parseLinearFactor(m[1]));
+  if (kind === 'monic_pair') {
+    if (factors.length !== 2 || factors.some((f) => !f || f.a !== 1)) return { value: original, p:'', q:'' };
+    return { value: original, p: String(factors[0].b), q: String(factors[1].b) };
+  }
+  if (kind === 'difference_squares') {
+    if (factors.length !== 2 || factors.some((f) => !f)) return { value: original, a:'', b:'' };
+    if (Math.abs(factors[0].a) !== Math.abs(factors[1].a) || Math.abs(factors[0].b) !== Math.abs(factors[1].b) || factors[0].b + factors[1].b !== 0) return { value: original, a:'', b:'' };
+    return { value: original, a: String(Math.abs(factors[0].a)), b: String(Math.abs(factors[0].b)) };
+  }
+  if (kind === 'linear_pair') {
+    if (factors.length !== 2 || factors.some((f) => !f)) return empty;
+    const sorted = factors.slice().sort((u,v) => u.a-v.a || u.b-v.b);
+    return { value: original, a1:String(sorted[0].a), b1:String(sorted[0].b), a2:String(sorted[1].a), b2:String(sorted[1].b) };
+  }
+  if (kind === 'common_x_factor') {
+    const firstParen = text.indexOf('(');
+    if (firstParen <= 0 || factors.length !== 1 || !factors[0]) return empty;
+    const outer = parseMonomialResponse(text.slice(0, firstParen));
+    if (outer.a === '' || Number(outer.b) !== 1) return empty;
+    return { value: original, outer:outer.a, innerX:String(factors[0].a), innerConst:String(factors[0].b) };
+  }
+  return empty;
+}
+function parseSolutionExpression(raw, kind) {
+  const original = String(raw || '').trim();
+  const text = original.replace(/[–—−]/g,'-').toLowerCase();
+  if (kind === 'xy') {
+    const mx=text.match(/x\s*=\s*([+-]?\d+(?:\.\d+)?)/), my=text.match(/y\s*=\s*([+-]?\d+(?:\.\d+)?)/);
+    return { value:original, a:mx?mx[1]:'', b:my?my[1]:'' };
+  }
+  const nums=[...text.matchAll(/[+-]?\d+(?:\.\d+)?/g)].map(m=>m[0]);
+  return { value:original, a:nums[0] || '', b:nums[1] || '' };
+}
+function normalizeNumericAlgebraResponse(raw) {
+  let text = String(raw || '').trim().replace(/[–—−]/g, '-');
+  if (text.includes('=')) text = text.slice(text.lastIndexOf('=') + 1).trim();
+  return text;
 }
 
 function getSelectedAssignmentStudent() {
@@ -306,6 +369,7 @@ function renderQuestionInput(question) {
   if (question.responseType === "pair") return (question.fields || []).map((field) => `<label class="field-stack">${escapeHtml(field.label)}<input data-qid="${id}" data-part="${escapeHtml(field.key)}" inputmode="decimal"></label>`).join("");
   if (question.responseType === "coefficient_map") return `<div class="coefficient-grid">${(question.fields || []).map((field) => `<label class="field-stack">${escapeHtml(field.label)}<input data-qid="${id}" data-part="${escapeHtml(field.key)}" inputmode="numeric" placeholder="0"></label>`).join("")}</div>`;
   if (question.responseType === "polynomial_expression") return `<div class="field-stack" style="width:100%"><label>${escapeHtml(question.answerLabel || "Type the full simplified expression")}<input data-qid="${id}" data-part="value" inputmode="text" autocapitalize="off" spellcheck="false" placeholder="${escapeHtml(question.placeholder || 'e.g. x^3 + 14x^2 + 4x + 4')}"></label><div class="phone-symbol-row" style="margin-top:8px"><button type="button" onclick="insertSymbol('x')">x</button><button type="button" onclick="insertSymbol('^')">^ Exponent</button><button type="button" onclick="insertSymbol('²')">²</button><button type="button" onclick="insertSymbol('³')">³</button><button type="button" onclick="insertSymbol('−')">−</button></div></div>`;
+  if (["monomial_expression","factor_expression","solution_expression"].includes(question.responseType)) return `<div class="field-stack" style="width:100%"><label>${escapeHtml(question.answerLabel || "Type the full algebra answer")}<input data-qid="${id}" data-part="value" inputmode="text" autocapitalize="off" spellcheck="false" placeholder="${escapeHtml(question.placeholder || 'Type the complete answer')}"></label><div class="phone-symbol-row" style="margin-top:8px"><button type="button" onclick="insertSymbol('x')">x</button><button type="button" onclick="insertSymbol('y')">y</button><button type="button" onclick="insertSymbol('=')">=</button><button type="button" onclick="insertSymbol('(')">(</button><button type="button" onclick="insertSymbol(')')">)</button><button type="button" onclick="insertSymbol('^')">^ Exponent</button><button type="button" onclick="insertSymbol('²')">²</button><button type="button" onclick="insertSymbol('³')">³</button><button type="button" onclick="insertSymbol('−')">−</button><button type="button" onclick="insertSymbol('+')">+</button></div></div>`;
   if (question.responseType === "factor_pair") return `<div class="factor-template">(x + <input data-qid="${id}" data-part="p" inputmode="numeric" aria-label="First constant">)(x + <input data-qid="${id}" data-part="q" inputmode="numeric" aria-label="Second constant">)</div>`;
   return `<label class="field-stack">${escapeHtml(question.answerLabel || "Answer")}<input data-qid="${id}" data-part="value" inputmode="${question.inputMode || "decimal"}"></label>${question.unit ? `<span class="soft-badge">${escapeHtml(question.unit)}</span>` : ""}`;
 }
@@ -318,8 +382,20 @@ function collectResponses() {
       const raw = (inputs[0]?.value || "").trim();
       return { id: question.id, response: parsePolynomialResponse(raw, (question.fields || []).map((field) => field.key)) };
     }
+    if (question.responseType === "monomial_expression") {
+      return { id: question.id, response: parseMonomialResponse((inputs[0]?.value || '').trim()) };
+    }
+    if (question.responseType === "factor_expression") {
+      return { id: question.id, response: parseFactorExpression((inputs[0]?.value || '').trim(), question.parserKind, question.fields || []) };
+    }
+    if (question.responseType === "solution_expression") {
+      return { id: question.id, response: parseSolutionExpression((inputs[0]?.value || '').trim(), question.parserKind) };
+    }
     const response = {};
     inputs.forEach((input) => { response[input.dataset.part || "value"] = input.value.trim(); });
+    if (question.responseType === 'number' && response.value != null && (/=\s*$/.test(question.answerLabel || '') || /solve\s+for\s+[a-z]/i.test(question.promptHtml || ''))) {
+      response.value = normalizeNumericAlgebraResponse(response.value);
+    }
     return { id: question.id, response };
   });
 }
